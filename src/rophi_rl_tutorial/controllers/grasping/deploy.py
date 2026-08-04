@@ -191,6 +191,8 @@ class GraspController:
         self.last_command: JointCommand | None = None
         self._latest_obs: torch.Tensor | None = None
         self._last_score = 0.0
+        # When True, zero arm efforts after apply so MuJoCo mouse qfrc_applied can move the robot.
+        self.suppress_arm_effort = False
 
         device = env.unwrapped.device
         self._home_q = torch.tensor(
@@ -355,8 +357,38 @@ class GraspController:
 
     def _apply_actions(self) -> None:
         term = self._term
-        # Identical to training: impedance.compute or _velocity_torque + hand VF integrate.
-        self._orig_apply()
+        if self.suppress_arm_effort:
+            # Float the arm for mouse drag: keep gravity compensation only (no impedance /
+            # velocity tracking). Zeroing *all* arm torque drops grav-comp and the arm falls.
+            data = term._entity.data
+            g = term.impedance.gains.gravity_comp
+            if g:
+                torque = g * term.impedance.gravity.compute(
+                    data.body_link_pos_w,
+                    data.body_link_quat_w,
+                    data.body_com_pos_w,
+                )
+                torque = torch.clamp(
+                    torque, -term.impedance.effort_limit, term.impedance.effort_limit
+                )
+            else:
+                torque = torch.zeros(
+                    term._num,
+                    len(term._arm_joint_ids),
+                    device=term.device,
+                    dtype=torch.float32,
+                )
+            term._entity.set_joint_effort_target(torque, joint_ids=term._arm_joint_ids)
+            # Still integrate the hand VF so fingers do not freeze mid-command.
+            err = term.hand_target - term._q_cmd
+            speed = term._v_max * (err.abs() / term._slowdown).clamp(max=1.0)
+            term._q_cmd = term._q_cmd + torch.sign(err) * speed * term._hand_dt
+            term._entity.set_joint_position_target(
+                term._q_cmd, joint_ids=term._hand_joint_ids
+            )
+        else:
+            # Identical to training: impedance.compute or _velocity_torque + hand VF integrate.
+            self._orig_apply()
         self.last_command = JointCommand(
             arm_effort=torch.zeros(1, 7, device=term.device),
             hand_position=term._q_cmd.detach().clone(),

@@ -8,7 +8,8 @@ uv run python scripts/grasping/run.py --policy logs/grasping/apple_deploy/policy
 ```
 
 Keys:
-  r         reset apple
+  r         reset object pose
+  n         random object (mesh-variant tasks)
   d         DEFAULT (home)
   v         CONTROL (REACH / LIFT)
   u/o       lift target ±x
@@ -16,12 +17,13 @@ Keys:
   i/k       lift target ±z
   Enter     full env reset
   Space     pause
-  Ctrl+drag perturb bodies
+  Double-click a body, then Ctrl+right-drag (translate) / Ctrl+left-drag (rotate)
 """
 
 from __future__ import annotations
 
 import argparse
+import random
 import sys
 from collections import deque
 from pathlib import Path
@@ -44,6 +46,7 @@ from mjlab.viewer.native.keys import (
     KEY_K,
     KEY_L,
     KEY_MINUS,
+    KEY_N,
     KEY_O,
     KEY_R,
     KEY_RIGHT,
@@ -64,10 +67,33 @@ from rophi_rl_tutorial.tasks.grasping.mjlab_task import fingertip_contact_binary
 
 sys.path.insert(0, str(Path(__file__).parent))
 from distill_grasp import SafeVecEnvWrapper  # noqa: E402
+from variant_switch import set_world_variant, variant_names as _variant_names  # noqa: E402
 
 _SCORE_HISTORY = 300
 _LIFT_STEP = 0.02
 
+# Keys claimed by DeployViewer. MuJoCo's hidden UI still toggles viz flags for many of
+# these (J=joints, U=actuators, I=inertia, N=constraints, R=transparent, …); we snapshot
+# ``viewer.opt.flags`` and restore after our handler so those defaults are undone.
+_HANDLED_KEYS = frozenset(
+    {
+        KEY_ENTER,
+        KEY_SPACE,
+        KEY_MINUS,
+        KEY_EQUAL,
+        KEY_RIGHT,
+        KEY_R,
+        KEY_N,
+        KEY_D,
+        KEY_V,
+        KEY_U,
+        KEY_O,
+        KEY_J,
+        KEY_L,
+        KEY_I,
+        KEY_K,
+    }
+)
 
 def build_student_env(
     device: str,
@@ -142,6 +168,21 @@ class DeployViewer(NativeMujocoViewer):
         self._score_fig.linedata[1][1] = 0.55
         self._score_fig.linedata[1][2] = -float(_SCORE_HISTORY)
         self._score_fig.linedata[1][3] = 0.55
+        # Mesh-variant catalogue (YCB-All etc.); None for single-object tasks.
+        obj = self.env.unwrapped.scene["object"]
+        self._object_catalogue = _variant_names(obj)
+        self._current_obj_idx: int | None = None
+        if self._object_catalogue:
+            w2v = self.env.unwrapped.sim.world_to_variant.get("object")
+            self._current_obj_idx = int(w2v[0].item()) if w2v is not None else 0
+        # Snapshot of viz flags so custom keys can undo MuJoCo UI shortcut toggles.
+        self._opt_flags_keep: np.ndarray | None = None
+        if self.viewer is not None:
+            opt = self.viewer.opt
+            opt.flags[int(mujoco.mjtVisFlag.mjVIS_PERTOBJ)] = 1
+            opt.flags[int(mujoco.mjtVisFlag.mjVIS_PERTFORCE)] = 1
+            opt.flags[int(mujoco.mjtVisFlag.mjVIS_SELECT)] = 1
+            self._opt_flags_keep = np.array(opt.flags, copy=True)
         controller = self.policy
         if isinstance(controller, GraspController) and controller.mode is ControlMode.DEFAULT:
             controller.go_home()
@@ -153,6 +194,7 @@ class DeployViewer(NativeMujocoViewer):
         super().close()
 
     def _safe_key_callback(self, key: int) -> None:
+        handled = key in _HANDLED_KEYS
         if key == KEY_ENTER:
             self.request_reset()
         elif key == KEY_SPACE:
@@ -165,6 +207,8 @@ class DeployViewer(NativeMujocoViewer):
             self.request_single_step()
         elif key == KEY_R:
             self.request_action("CUSTOM", "reset_apple")
+        elif key == KEY_N:
+            self.request_action("CUSTOM", "random_object")
         elif key == KEY_D:
             self.request_action("CUSTOM", "mode_default")
         elif key == KEY_V:
@@ -182,6 +226,31 @@ class DeployViewer(NativeMujocoViewer):
         elif key == KEY_K:
             self.request_action("CUSTOM", ("lift", 0.0, 0.0, -_LIFT_STEP))
 
+        # MuJoCo runs its UI shortcut handler *before* this callback. Restore viz flags for
+        # keys we own; adopt the new flags for keys we don't (F1, C, …).
+        v = self.viewer
+        if v is None:
+            return
+        if handled and self._opt_flags_keep is not None:
+            v.opt.flags[:] = self._opt_flags_keep
+        elif not handled:
+            self._opt_flags_keep = np.array(v.opt.flags, copy=True)
+
+    def sync_viewer_to_env(self) -> None:
+        """Forward mouse forces, and float the arm while a robot body is being dragged."""
+        super().sync_viewer_to_env()
+        controller = self.policy
+        if not isinstance(controller, GraspController):
+            return
+        v = self.viewer
+        suppress = False
+        if v is not None and v.perturb.active != 0 and v.perturb.select > 0 and self.mjm is not None:
+            body = mujoco.mj_id2name(self.mjm, mujoco.mjtObj.mjOBJ_BODY, int(v.perturb.select))
+            # Entity bodies are named ``robot/...`` / ``object/...``.
+            suppress = body is not None and (
+                body == "robot" or body.startswith("robot/")
+            )
+        controller.suppress_arm_effort = suppress
     def _handle_custom_action(self, action: ViewerAction, payload: object | None) -> bool:
         if action is not ViewerAction.CUSTOM:
             return super()._handle_custom_action(action, payload)
@@ -190,7 +259,10 @@ class DeployViewer(NativeMujocoViewer):
             return False
         if payload == "reset_apple":
             controller.reset_object()
-            self.log("[run] apple reset", VerbosityLevel.INFO)
+            self.log("[run] object reset", VerbosityLevel.INFO)
+            return True
+        if payload == "random_object":
+            self._random_object(controller)
             return True
         if payload == "mode_default":
             controller.set_mode(ControlMode.DEFAULT)
@@ -212,6 +284,29 @@ class DeployViewer(NativeMujocoViewer):
             )
             return True
         return False
+
+    def _random_object(self, controller: GraspController) -> None:
+        """Hot-swap to a random catalogue mesh and re-seat the object."""
+        catalogue = self._object_catalogue
+        if not catalogue:
+            self.log("[run] no object catalogue (single-object task)", VerbosityLevel.INFO)
+            return
+        n = len(catalogue)
+        if n <= 1:
+            self.log(f"[run] only one object: {catalogue[0]}", VerbosityLevel.INFO)
+            return
+        cur = self._current_obj_idx if self._current_obj_idx is not None else 0
+        choices = [i for i in range(n) if i != cur]
+        variant_idx = random.choice(choices)
+        name = set_world_variant(
+            self.env,
+            entity_name="object",
+            env_idx=0,
+            variant_idx=variant_idx,
+        )
+        self._current_obj_idx = variant_idx
+        controller.reset_object()
+        self.log(f"[run] object -> {name} (idx {variant_idx}/{n - 1})", VerbosityLevel.INFO)
 
     def reset_environment(self) -> None:
         super().reset_environment()
@@ -265,11 +360,15 @@ class DeployViewer(NativeMujocoViewer):
             d = float(np.linalg.norm(obj - palm))
             dist_txt = f"{d:.3f}/{controller.engage_radius:.2f}"
             engaged = "Y" if controller.engaged else "N"
-        text_1 = "Mode\nPhase\nScore\nDist/Eng\nEngaged\nLift\nArm\nStep\nStatus"
+        text_1 = "Mode\nPhase\nScore\nDist/Eng\nEngaged\nLift\nArm\nObj\nStep\nStatus"
         arm = controller.arm_control if isinstance(controller, GraspController) else "?"
+        if self._object_catalogue and self._current_obj_idx is not None:
+            obj_txt = f"{self._current_obj_idx}:{self._object_catalogue[self._current_obj_idx]}"
+        else:
+            obj_txt = "-"
         text_2 = (
             f"{mode}\n{phase}\n{score:.3f}\n{dist_txt}\n{engaged}\n{lift}\n{arm}\n"
-            f"{status.step_count}\n{'PAUSED' if status.paused else 'RUNNING'}{capped}"
+            f"{obj_txt}\n{status.step_count}\n{'PAUSED' if status.paused else 'RUNNING'}{capped}"
         )
         viewer.set_texts(
             (
@@ -440,7 +539,10 @@ def main() -> None:
         f"[run] mode={controller.mode.value} phase={controller.phase.name}  "
         f"engage/release={controller.engage_radius:.2f}/{controller.release_radius:.2f}"
     )
-    print("[run] keys: r apple | d home | v control | u/o j/l i/k lift target")
+    print(
+        "[run] keys: r object | n random obj | d home | v control | u/o j/l i/k lift | "
+        "dbl-click + Ctrl-drag perturb"
+    )
 
     viewer = DeployViewer(env, controller, enable_perturbations=True, verbosity=VerbosityLevel.INFO)
     try:

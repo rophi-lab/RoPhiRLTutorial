@@ -38,7 +38,7 @@ uv run python scripts/grasping/train_grasp.py \
 #    Defaults to --num-envs 1. GUI: env idx + obj idx (hot-swap mesh without OOM).
 uv run python scripts/grasping/play_grasp.py \
   --task RoPhi-Grasp-YCB-All \
-  --hand-mode pca \
+  --hand-mode pca \ 
   --arm-residual \
   --run-dir logs/grasping/ycb_all \
   --device cuda:0 \
@@ -67,6 +67,9 @@ uv run python scripts/grasping/export_policy.py \
 # 6. Run exported policy in MuJoCo GUI (Ctrl+drag to perturb the object)
 uv run python scripts/grasping/run.py \
   --task RoPhi-Grasp-YCB-All \
+  --hand-mode pca \
+  --arm-residual \
+  --student-obs fingertip \
   --policy logs/grasping/ycb_all_deploy/policy.pt
 ```
 
@@ -268,8 +271,11 @@ uv run python scripts/grasping/run.py --policy logs/grasping/apple_deploy/policy
   --arm-velocity --hand-gate --engage-radius 0.12 --release-radius 0.18
 ```
 
-Keys: `r` apple, `d` home, `v` control, `u/o j/l i/k` lift target, Enter reset, Space pause,
-Ctrl+drag perturb. Mirror export flags (`--hand-mode`, `--arm-residual`, `--student-obs`).
+Keys: `r` object, `n` random object (YCB-All etc.), `d` home, `v` control,
+`u/o j/l i/k` lift target, Enter reset, Space pause.
+Perturb: double-click a body, then Ctrl+right-drag (translate) / Ctrl+left-drag (rotate);
+dragging a robot link temporarily floats the arm so impedance does not fight the mouse.
+Mirror export flags (`--hand-mode`, `--arm-residual`, `--student-obs`).
 
 ---
 
