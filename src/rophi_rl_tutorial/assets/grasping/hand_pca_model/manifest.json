@@ -1,0 +1,48 @@
+{
+  "config": "pca_test.yaml",
+  "pca_model": "pca_model.npz",
+  "robot_metadata": "robot_metadata.json",
+  "summary": "summary.json",
+  "latent_stats": "latent_stats.npz",
+  "train_latent_stats": "train_latent_stats.npz",
+  "validation_latent_stats": "validation_latent_stats.npz",
+  "reconstruction_stats": "reconstruction_stats.npz",
+  "reconstruction_stats_training": "reconstruction_stats_training.npz",
+  "reconstruction_stats_validation": "reconstruction_stats_validation.npz",
+  "model_files": {
+    "autoencoder": "autoencoder.pt",
+    "encoder": "encoder.pt",
+    "decoder": "decoder.pt"
+  },
+  "scripted_files": {
+    "encoder_scripted": "encoder_scripted.pt",
+    "decoder_scripted": "decoder_scripted.pt",
+    "autoencoder_scripted": "autoencoder_scripted.pt"
+  },
+  "dataset_path": "/home/aalexiev/brl/Dexterous-Hand-Retargeting/assets/datasets/retargeted_grasps_test",
+  "z_dim": 5,
+  "qpos_dim": 20,
+  "robot_joint_names": [
+    "a08_finger_r_joint_1_thumb1",
+    "a09_finger_r_joint_1_thumb2",
+    "a10_finger_r_joint_1_thumb3",
+    "a11_finger_r_joint_1_thumb4",
+    "a12_finger_r_joint_2_index1",
+    "a13_finger_r_joint_2_index2",
+    "a14_finger_r_joint_2_index3",
+    "a15_finger_r_joint_2_index4",
+    "a16_finger_r_joint_3_middle1",
+    "a17_finger_r_joint_3_middle2",
+    "a18_finger_r_joint_3_middle3",
+    "a19_finger_r_joint_3_middle4",
+    "a20_finger_r_joint_4_ring1",
+    "a21_finger_r_joint_4_ring2",
+    "a22_finger_r_joint_4_ring3",
+    "a23_finger_r_joint_4_ring4",
+    "a24_finger_r_joint_5_little1",
+    "a25_finger_r_joint_5_little2",
+    "a26_finger_r_joint_5_little3",
+    "a27_finger_r_joint_5_little4"
+  ],
+  "num_samples": 300
+}
